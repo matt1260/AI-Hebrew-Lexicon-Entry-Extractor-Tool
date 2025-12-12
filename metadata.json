@@ -1,0 +1,5 @@
+{
+  "name": "Hebrew Lexicon Extractor",
+  "description": "A tool to scan and extract structured Hebrew lexicon entries from images using Gemini 1.5 Pro.",
+  "requestFramePermissions": []
+}
