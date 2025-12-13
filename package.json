@@ -6,14 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start:server": "node server/index.js"
   },
   "dependencies": {
     "react-dom": "^19.2.3",
     "react": "^19.2.3",
     "@google/genai": "^1.33.0",
-    "sql.js": "1.10.0",
-    "localforage": "1.10.0"
+    "sql.js": "^1.9.0",
+    "localforage": "1.10.0",
+    "cors": "^2.8.5",
+    "express": "^4.22.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

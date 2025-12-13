@@ -168,6 +168,16 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ entries, onDeleteEntrie
                         <span className="hebrew-text font-medium" dir="rtl">{entry.root}</span>
                       </div>
                     )}
+                    {entry.isRoot && (
+                      <div className="text-[10px] uppercase tracking-wide text-amber-600 mt-1">
+                        root=true
+                      </div>
+                    )}
+                    {entry.strongsNumbers && (
+                      <div className="text-[10px] uppercase tracking-wide text-indigo-700 mt-1">
+                        STRONGS: {entry.strongsNumbers}
+                      </div>
+                    )}
                   </td>
                   <td className="p-4 align-top text-sm">
                     {entry.sourcePage && (

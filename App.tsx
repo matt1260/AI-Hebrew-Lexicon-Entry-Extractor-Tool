@@ -7,6 +7,32 @@ import { ProcessedPage, LexiconEntry } from './types';
 import { extractEntriesFromImage } from './services/geminiService';
 import { dbService } from './services/db';
 
+const HEBREW_LETTER_REGEX = /[\u05D0-\u05EA]/g;
+
+const countHebrewLetters = (value?: string) => {
+  if (!value) return 0;
+  return (value.match(HEBREW_LETTER_REGEX) || []).length;
+};
+
+const dbLoadSourceMeta: Record<string, { text: string; color: string }> = {
+  server: { text: 'Server synced', color: 'bg-blue-50 text-blue-700 border border-blue-200' },
+  indexedDB: { text: 'Cached (IndexedDB)', color: 'bg-emerald-50 text-emerald-700 border border-emerald-200' },
+  'prebuilt-file': { text: 'Loaded lexicon.sqlite', color: 'bg-slate-50 text-slate-700 border border-slate-200' },
+  fresh: { text: 'Fresh database', color: 'bg-amber-50 text-amber-700 border border-amber-200' },
+  'invalid-cache': { text: 'Rebuilt (cache invalid)', color: 'bg-red-50 text-red-600 border border-red-200' }
+};
+
+const renderLoadSourceBadge = (source: string | null) => {
+  if (!source) return null;
+  const meta = dbLoadSourceMeta[source];
+  if (!meta) return null;
+  return (
+    <span className={`text-[10px] font-semibold tracking-wide uppercase rounded-full px-2 py-0.5 flex items-center gap-1 ${meta.color}`}>
+      {meta.text}
+    </span>
+  );
+};
+
 const App: React.FC = () => {
   const [pages, setPages] = useState<ProcessedPage[]>([]);
   const [dbEntries, setDbEntries] = useState<LexiconEntry[]>([]);
@@ -14,12 +40,17 @@ const App: React.FC = () => {
   const [selectedLetter, setSelectedLetter] = useState<string | null>(null);
   const [isDbReady, setIsDbReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [dbLoadSource, setDbLoadSource] = useState<string | null>(null);
+  const [isResettingDb, setIsResettingDb] = useState(false);
+  const [serverConnected, setServerConnected] = useState(false);
 
   // Initialize DB on mount
   useEffect(() => {
     const initDb = async () => {
       try {
         await dbService.init();
+        setDbLoadSource(dbService.getLoadSource());
+        setServerConnected(dbService.isServerAvailable());
         setIsDbReady(true);
         // Load initial data
         refreshEntries(null);
@@ -81,11 +112,16 @@ const App: React.FC = () => {
         const extractedEntries = await extractEntriesFromImage(file);
         
         // Enrich entries with source metadata
-        const enrichedEntries: LexiconEntry[] = extractedEntries.map(entry => ({
-          ...entry,
-          sourcePage: file.name,
-          sourceUrl: pageUrl
-        }));
+        const enrichedEntries: LexiconEntry[] = extractedEntries.map(entry => {
+          const strongsMatches = dbService.getStrongNumbersFor(entry.hebrewWord);
+          return {
+            ...entry,
+            isRoot: countHebrewLetters(entry.hebrewWord) === 3,
+            strongsNumbers: strongsMatches.length > 0 ? strongsMatches.join('/') : undefined,
+            sourcePage: file.name,
+            sourceUrl: pageUrl
+          };
+        });
 
         // Insert into Database
         dbService.addEntries(enrichedEntries);
@@ -137,6 +173,22 @@ const App: React.FC = () => {
     setIsProcessing(false);
   }, [selectedLetter, refreshEntries]);
 
+  const handleCreateNewDatabase = useCallback(async () => {
+    setIsResettingDb(true);
+    setDbError(null);
+    try {
+      await dbService.resetDatabase();
+      await dbService.init();
+      setDbLoadSource(dbService.getLoadSource());
+      refreshEntries(null);
+    } catch (error: any) {
+      console.error('Failed to rebuild database', error);
+      setDbError(error?.message || 'Failed to rebuild database.');
+    } finally {
+      setIsResettingDb(false);
+    }
+  }, [refreshEntries]);
+
   if (dbError) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 text-red-600 p-4">
@@ -174,9 +226,33 @@ const App: React.FC = () => {
           </div>
           <div>
             <h1 className="text-xl font-bold text-slate-900 leading-tight">Hebrew Lexicon Scanner</h1>
-            <p className="text-xs text-slate-500">SQLite Database Active</p>
+            <p className="text-xs text-slate-500 flex items-center gap-2">
+              <span>SQLite Database Active</span>
+              {renderLoadSourceBadge(dbLoadSource)}
+              {serverConnected && (
+                <span className="text-[10px] font-semibold tracking-wide uppercase rounded-full px-2 py-0.5 flex items-center gap-1 bg-green-50 text-green-700 border border-green-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                  Server
+                </span>
+              )}
+            </p>
           </div>
         </div>
+
+        <button
+          onClick={handleCreateNewDatabase}
+          disabled={isResettingDb || isProcessing}
+          className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest rounded-full px-3 py-1.5 border border-slate-200 bg-slate-50 text-slate-800 hover:bg-slate-100 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {isResettingDb ? (
+            <span className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-slate-800 animate-pulse"></span>
+              Resetting DB
+            </span>
+          ) : (
+            'Create New Database'
+          )}
+        </button>
       </header>
 
       {/* Main Content */}

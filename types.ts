@@ -6,6 +6,8 @@ export interface LexiconEntry {
   partOfSpeech: string;
   definition: string;
   root?: string;
+  isRoot?: boolean;
+  strongsNumbers?: string;
   sourcePage?: string;
   sourceUrl?: string;
 }
