@@ -1,8 +1,8 @@
-# Hebrew Lexicon AI Reader & Parser
+# AI Hebrew Lexicon Reader, Parser, and Correcter
 
 AI scanner tool which uses Gemini and response schema constraints of newer models to read Hebrew pages, parse data into a database, and validate, and correct entries. To save on costs, there is also the options to export to JSONL for batch processing with the Google's Batch API (50% discount). App uses strongs.sqlite to match roots to Strong's numbers (Update Strong's button).
 
-Includes fully digitized, linked, and IDed database of A Hebrew & Chaldee lexicon to the Old Testament by Julius Fürst.
+Includes fully digitized, linked, and IDed database of A Hebrew & Chaldee lexicon to the Old Testament by Julius Fürst with over 15,000 lexical entries.
 
 **Prerequisites:**  Node.js
 
