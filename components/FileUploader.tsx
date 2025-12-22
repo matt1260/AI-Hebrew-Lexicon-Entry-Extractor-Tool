@@ -54,10 +54,10 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesSelected, isProcessi
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       className={`
-        border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all duration-200
+        border-2 border-dashed rounded-xl p-4 text-center cursor-pointer transition-all duration-200
         ${isDragging 
-          ? 'border-indigo-500 bg-indigo-50' 
-          : 'border-slate-300 hover:border-indigo-400 hover:bg-slate-50'
+          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20' 
+          : 'border-slate-300 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500 hover:bg-slate-50 dark:hover:bg-slate-800/50'
         }
         ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}
       `}
@@ -71,18 +71,18 @@ const FileUploader: React.FC<FileUploaderProps> = ({ onFilesSelected, isProcessi
         multiple
       />
       
-      <div className="flex flex-col items-center gap-3">
-        <div className="p-3 bg-indigo-100 rounded-full text-indigo-600">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-8 h-8">
+      <div className="flex items-center gap-3">
+        <div className="p-2 bg-indigo-100 dark:bg-indigo-900/30 rounded-lg text-indigo-600 dark:text-indigo-400 flex-shrink-0">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
           </svg>
         </div>
-        <div>
-          <p className="text-lg font-medium text-slate-700">
-            {isProcessing ? 'Processing...' : 'Upload Lexicon Pages'}
+        <div className="text-left">
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+            {isProcessing ? 'Processing...' : 'Upload Scans'}
           </p>
-          <p className="text-sm text-slate-500 mt-1">
-            Drag & drop or click to select images
+          <p className="text-xs text-slate-500 dark:text-slate-500">
+            Drop images or click
           </p>
         </div>
       </div>

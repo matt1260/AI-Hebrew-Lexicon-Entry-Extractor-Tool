@@ -10,6 +10,24 @@ export interface LexiconEntry {
   strongsNumbers?: string;
   sourcePage?: string;
   sourceUrl?: string;
+  dateAdded?: number;
+  // Validation fields
+  status?: 'valid' | 'invalid' | 'unchecked';
+  validationIssue?: string;
+}
+
+/**
+ * Get the public URL for a source page image
+ * @param entry - The lexicon entry containing sourcePage
+ * @returns The public URL path or undefined
+ */
+export function getSourceImageUrl(entry: LexiconEntry): string | undefined {
+  // If sourcePage looks like a fuerst_lex filename, return the public path
+  if (entry.sourcePage && entry.sourcePage.startsWith('fuerst_lex_')) {
+    return `/fuerst_lex/${entry.sourcePage}`;
+  }
+  // Otherwise fall back to sourceUrl (might be blob URL from current session)
+  return entry.sourceUrl;
 }
 
 export interface ProcessedPage {
