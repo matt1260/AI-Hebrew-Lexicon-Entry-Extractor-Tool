@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { LexiconEntry } from "../types";
+import { LexiconEntry, normalizeSourcePageFilename } from "../types";
 
 // Resolve API key from environment.
 // - For Vite frontend builds, set `VITE_GEMINI_API_KEY` in a .env file.
@@ -108,9 +108,12 @@ export const buildCorrectionBatchJsonl = (
 
   const requests: BatchRequest[] = [];
 
-  for (const [page, pageEntries] of Object.entries(entriesByPage)) {
-    // Skip if no valid page file or unknown
-    if (page === 'unknown') continue;
+    for (const [page, pageEntries] of Object.entries(entriesByPage)) {
+      // Skip if no valid page file or unknown
+      if (page === 'unknown') continue;
+
+      const normalizedPage = normalizeSourcePageFilename(page);
+      if (!normalizedPage) continue;
 
     // Construct the prompt for this batch of entries
     const entriesText = pageEntries.map(e => {
@@ -147,20 +150,24 @@ Respond with a JSON array of objects:
     // The script will intercept this tag and handle the upload
     // If sourcePage is a full filename like "fuerst_lex_0042.jpg", use it.
     // If it's just "0042", construct it.
-    let imagePath = page;
+    let imagePath = normalizedPage;
     if (!imagePath.includes('/')) {
-       // Assume it's in public/fuerst_lex/ if it looks like a fuerst file or just a number
-       if (imagePath.startsWith('fuerst_lex_') || /^\d+$/.test(imagePath)) {
-          // If it doesn't have extension, add .jpg
-          if (!imagePath.endsWith('.jpg')) imagePath += '.jpg';
-          imagePath = `public/fuerst_lex/${imagePath}`;
-       }
+      if (normalizedPage.startsWith('fuerst_lex_') || /^\d+$/.test(normalizedPage)) {
+        imagePath = `public/fuerst_lex/${normalizedPage}`;
+      } else if (normalizedPage.toLowerCase().startsWith('gesenius_lexicon_')) {
+        imagePath = `public/gesenius_lex/${normalizedPage}`;
+      }
     }
     
     const fileTag = `[[FILE:${imagePath}]]`;
+    
+    // Extract a clean ID from the filename (e.g., 'fuerst_lex_0042' -> 'fuerst_0042')
+    const baseFilename = normalizedPage.replace(/\.[^.]+$/, ''); // Remove extension
+    const match = baseFilename.match(/^([a-z]+)(?:_lex(?:icon)?)?_?(\d+)$/i);
+    const cleanId = match ? `${match[1].toLowerCase()}_${match[2]}` : baseFilename.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
 
     requests.push({
-      custom_id: `correct-${page}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      custom_id: `cor_${cleanId}`,
       method: 'POST',
       url: `/v1beta/models/${model}:generateContent`,
       body: {
@@ -201,8 +208,13 @@ export const buildExtractionBatchJsonl = (
     
     const fileTag = `[[FILE:${imagePath}]]`;
     
+    // Extract a clean ID from the filename (e.g., 'fuerst_lex_0042.jpg' -> 'fuerst_0042')
+    const baseFilename = file.name.replace(/\.[^.]+$/, '');
+    const match = baseFilename.match(/^([a-z]+)(?:_lex(?:icon)?)?_?(\d+)$/i);
+    const cleanId = match ? `${match[1].toLowerCase()}_${match[2]}` : baseFilename.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    
     return {
-      custom_id: `extract-${file.name.replace(/[^a-zA-Z0-9]/g, '-')}-${Date.now()}`,
+      custom_id: `ext_${cleanId}`,
       method: 'POST',
       url: `/v1beta/models/${model}:generateContent`,
       body: {

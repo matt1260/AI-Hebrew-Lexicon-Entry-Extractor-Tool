@@ -1,6 +1,6 @@
 import initSqlJs from 'sql.js';
 import localforage from 'localforage';
-import { LexiconEntry } from '../types';
+import { LexiconEntry, normalizeSourcePageFilename, getPublicSourceImagePath } from '../types';
 
 const DB_NAME = 'hebrew_lexicon_db';
 const STORE_KEY = 'sqlite_binary';
@@ -27,6 +27,7 @@ class DatabaseService {
   private strongsDb: any = null;
   private serverAvailable: boolean = false;
   private forceFreshInit: boolean = false;
+  private sourcePathsNormalized: boolean = false;
 
   constructor() {
     localforage.config({
@@ -95,6 +96,7 @@ class DatabaseService {
     this.loadSource = null;
     this.isReady = false;
     this.forceFreshInit = true;
+    this.sourcePathsNormalized = false;
   }
 
   async loadStrongNumbersDb() {
@@ -252,9 +254,10 @@ class DatabaseService {
         }
 
         await this.loadStrongNumbersDb();
+        await this.normalizeSourcePaths();
 
-      this.isReady = true;
-      return { loadedFromExisting };
+        this.isReady = true;
+        return { loadedFromExisting };
     } catch (error) {
       console.error("DatabaseService init error:", error);
       throw error;
@@ -380,6 +383,22 @@ class DatabaseService {
       return this.mapResults(result[0]);
     } catch (e) {
       console.error("Error fetching entries by sourcePage", sourcePage, e);
+      return [];
+    }
+  }
+
+  /**
+   * Fetch entries where sourcePage ends with a specific suffix (e.g. _0041.jpg)
+   */
+  getEntriesBySourcePageSuffix(suffix: string): LexiconEntry[] {
+    if (!this.db) return [];
+    try {
+      const sql = "SELECT * FROM entries WHERE sourcePage LIKE ? ORDER BY id";
+      const result = this.db.exec(sql, [`%${suffix}`]);
+      if (result.length === 0) return [];
+      return this.mapResults(result[0]);
+    } catch (e) {
+      console.error("Error fetching entries by sourcePage suffix", suffix, e);
       return [];
     }
   }
@@ -1251,6 +1270,53 @@ class DatabaseService {
       row.strongsNumbers = row.strongsNumbers || '';
     }
     return row as LexiconEntry;
+  }
+
+  private async normalizeSourcePaths() {
+    if (!this.db || this.sourcePathsNormalized) {
+      this.sourcePathsNormalized = true;
+      return;
+    }
+
+    try {
+      const result = this.db.exec('SELECT id, sourcePage, sourceUrl FROM entries');
+      if (!result || result.length === 0) {
+        return;
+      }
+
+      const rows = result[0].values as Array<any[]>;
+      const updates: Array<[string, string, string]> = [];
+
+      for (const row of rows) {
+        const [id, rawPage, rawUrl] = row;
+        const normalizedPage = normalizeSourcePageFilename(rawPage) ?? normalizeSourcePageFilename(rawUrl);
+        if (!normalizedPage) {
+          continue;
+        }
+        const normalizedUrl = getPublicSourceImagePath(normalizedPage, rawUrl) ?? '';
+        const storedPage = rawPage ?? '';
+        const storedUrl = rawUrl ?? '';
+        if (storedPage === normalizedPage && storedUrl === normalizedUrl) {
+          continue;
+        }
+        updates.push([normalizedPage, normalizedUrl, id]);
+      }
+
+      if (updates.length === 0) {
+        return;
+      }
+
+      const stmt = this.db.prepare('UPDATE entries SET sourcePage = ?, sourceUrl = ? WHERE id = ?');
+      for (const params of updates) {
+        stmt.run(params);
+      }
+      stmt.free();
+      await this.save();
+    } catch (error) {
+      console.error('Failed to normalize source paths:', error);
+    } finally {
+      this.sourcePathsNormalized = true;
+    }
   }
 
   /**

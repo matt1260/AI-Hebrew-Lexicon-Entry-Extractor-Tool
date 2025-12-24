@@ -3,7 +3,7 @@ import FileUploader from './components/FileUploader';
 import ResultsDisplay from './components/ResultsDisplay';
 import ProcessingQueue from './components/ProcessingQueue';
 import AlphabetFilter from './components/AlphabetFilter';
-import { ProcessedPage, LexiconEntry } from './types';
+import { ProcessedPage, LexiconEntry, getSourcePageFromBatchKey } from './types';
 import {
   buildValidationBatchJsonl,
   buildCorrectionBatchJsonl,
@@ -104,10 +104,13 @@ const App: React.FC = () => {
 
   // Missing pages modal state
   const [showMissingPages, setShowMissingPages] = useState(false);
-  const [missingPages, setMissingPages] = useState<number[]>([]);
-  const [scannedPagesCount, setScannedPagesCount] = useState(0);
-  const [selectedMissingPages, setSelectedMissingPages] = useState<Set<number>>(new Set());
+  const [missingPageFiles, setMissingPageFiles] = useState<File[]>([]);
+  const [coveredPageFiles, setCoveredPageFiles] = useState<File[]>([]);
+  const [allSourceFiles, setAllSourceFiles] = useState<File[]>([]);
+  const [selectedMissingFiles, setSelectedMissingFiles] = useState<Set<string>>(new Set());
   const [missingPageInstructions, setMissingPageInstructions] = useState<string>('');
+  const [sourceDirectoryName, setSourceDirectoryName] = useState<string>('');
+  const missingPagesInputRef = useRef<HTMLInputElement | null>(null);
 
   // Delete by page modal state
   const [showDeleteByPage, setShowDeleteByPage] = useState(false);
@@ -296,18 +299,25 @@ const App: React.FC = () => {
 
   const fetchEntriesBySourcePage = useCallback((pageNumber: number) => {
     const suffix = String(pageNumber).padStart(4, '0');
+    
+    // Try to find entries by matching the suffix in the sourcePage field
+    const entries = dbService.getEntriesBySourcePageSuffix(`_${suffix}.jpg`);
+    if (entries.length > 0) {
+      return { entries, usedId: entries[0].sourcePage || suffix };
+    }
+
+    // Fallback to common candidates if no suffix match
     const candidates = [
       `fuerst_lex_${suffix}.jpg`,
+      `gesenius_lexicon_${suffix}.jpg`,
       `${suffix}.jpg`,
-      `fuerst_lex_${suffix}`,
-      suffix,
-      pageNumber.toString()
+      suffix
     ];
 
     for (const id of candidates) {
-      const entries = dbService.getEntriesBySourcePage(id);
-      if (entries.length > 0) {
-        return { entries, usedId: id };
+      const results = dbService.getEntriesBySourcePage(id);
+      if (results.length > 0) {
+        return { entries: results, usedId: id };
       }
     }
 
@@ -629,35 +639,31 @@ const App: React.FC = () => {
 
     for (let i = 0; i < results.length; i++) {
       const res = results[i];
-      if (!res.hebrewWord || !res.definition) {
+
+      // Tolerant mapping: accept multiple shapes from different batch outputs
+      const hebrewWord = res.hebrewWord ?? res.lemma ?? res.word ?? res.headword ?? res.name;
+      const hebrewConsonantal = res.hebrewConsonantal ?? res.consonantal ?? res.consonantal_form ?? res.consonantalForm;
+      const definition = res.definition ?? res.def ?? res.meaning ?? res.description;
+      const transliteration = res.transliteration ?? res.transliteration ?? res.tr ?? undefined;
+      const partOfSpeech = res.partOfSpeech ?? res.part_of_speech ?? res.partOfSpeech ?? res.pos ?? '';
+      const root = res.root ?? res.root_word ?? res.rootWord ?? undefined;
+
+      if (!hebrewWord || !definition) {
         setBatchImportProcessed(i + 1);
         continue;
       }
 
       // Try to extract sourcePage from _batchKey (e.g. extract-fuerst_lex_0041-jpg-123456789)
-      let sourcePage = undefined;
-      if (res._batchKey && res._batchKey.startsWith('extract-')) {
-        const parts = res._batchKey.split('-');
-        // The filename was slugified: file.name.replace(/[^a-zA-Z0-9]/g, '-')
-        // We can try to reconstruct it or at least find the fuerst_lex_#### part
-        const match = res._batchKey.match(/fuerst_lex_(\d{4})/);
-        if (match) {
-          sourcePage = `fuerst_lex_${match[1]}.jpg`;
-        } else {
-          // Fallback: use the part after 'extract-' but before the timestamp
-          sourcePage = parts.slice(1, -1).join('-');
-          if (!sourcePage.includes('.')) sourcePage += '.jpg';
-        }
-      }
+      const sourcePage = getSourcePageFromBatchKey(res._batchKey);
 
       const entry: LexiconEntry = {
         id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2) + Date.now().toString(36),
-        hebrewWord: res.hebrewWord,
-        hebrewConsonantal: res.hebrewConsonantal,
-        transliteration: res.transliteration,
-        partOfSpeech: res.partOfSpeech || '',
-        definition: res.definition,
-        root: res.root,
+        hebrewWord: hebrewWord,
+        hebrewConsonantal: hebrewConsonantal,
+        transliteration: transliteration,
+        partOfSpeech: partOfSpeech || '',
+        definition: definition,
+        root: root,
         sourcePage: sourcePage,
         status: 'unchecked',
         dateAdded: Date.now()
@@ -1463,66 +1469,97 @@ const App: React.FC = () => {
   }, [findType, replaceType, selectedLetter, searchQuery, currentPage, pageSize, refreshEntries]);
 
   const handleCheckMissingPages = useCallback(() => {
-    const missing = dbService.getMissingPages('fuerst_lex_', '.jpg', 44, 1558);
-    const existingPages = dbService.getDistinctSourcePages();
-    setMissingPages(missing);
-    setScannedPagesCount(existingPages.length);
-    setSelectedMissingPages(new Set());
+    // Just show modal - data persists if already selected
     setShowMissingPages(true);
   }, []);
 
-  const toggleMissingPageSelection = useCallback((pageNum: number) => {
-    setSelectedMissingPages(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(pageNum)) {
-        newSet.delete(pageNum);
+  const handleMissingPagesDirectorySelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    // Get directory name from first file's path
+    const firstFile = files[0];
+    const pathParts = firstFile.webkitRelativePath?.split('/') || [];
+    const dirName = pathParts.length > 1 ? pathParts[0] : 'Selected Directory';
+    setSourceDirectoryName(dirName);
+
+    // Filter to only JPG/JPEG files
+    const jpgFiles: File[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (/\.jpe?g$/i.test(file.name)) {
+        jpgFiles.push(file);
+      }
+    }
+
+    if (jpgFiles.length === 0) {
+      alert('No JPG files found in the selected directory.');
+      return;
+    }
+
+    // Sort files by name
+    jpgFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    setAllSourceFiles(jpgFiles);
+
+    // Get existing source pages from database
+    const existingPages = new Set(dbService.getDistinctSourcePages().map(p => p.toLowerCase()));
+
+    // Categorize files
+    const missing: File[] = [];
+    const covered: File[] = [];
+
+    for (const file of jpgFiles) {
+      const normalized = file.name.toLowerCase();
+      if (existingPages.has(normalized)) {
+        covered.push(file);
       } else {
-        newSet.add(pageNum);
+        missing.push(file);
+      }
+    }
+
+    setMissingPageFiles(missing);
+    setCoveredPageFiles(covered);
+    setSelectedMissingFiles(new Set());
+
+    // Reset file input for re-selection
+    if (event.target) event.target.value = '';
+  }, []);
+
+  const toggleMissingFileSelection = useCallback((fileName: string) => {
+    setSelectedMissingFiles(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(fileName)) {
+        newSet.delete(fileName);
+      } else {
+        newSet.add(fileName);
       }
       return newSet;
     });
   }, []);
 
-  const selectAllMissingPages = useCallback(() => {
-    setSelectedMissingPages(new Set(missingPages));
-  }, [missingPages]);
+  const selectAllMissingFiles = useCallback(() => {
+    setSelectedMissingFiles(new Set(missingPageFiles.map(f => f.name)));
+  }, [missingPageFiles]);
 
-  const clearMissingPageSelection = useCallback(() => {
-    setSelectedMissingPages(new Set());
+  const clearMissingFileSelection = useCallback(() => {
+    setSelectedMissingFiles(new Set());
   }, []);
 
   const handleScanSelectedMissingPages = useCallback(async () => {
-    if (selectedMissingPages.size === 0) return;
+    if (selectedMissingFiles.size === 0) return;
     
-    // Convert selected page numbers to File objects by fetching from public folder
-    const selectedNums = [...selectedMissingPages].sort((a, b) => a - b);
-    const files: File[] = [];
+    // Get the selected File objects
+    const filesToScan = missingPageFiles.filter(f => selectedMissingFiles.has(f.name));
     
-    for (const pageNum of selectedNums) {
-      const filename = `fuerst_lex_${String(pageNum).padStart(4, '0')}.jpg`;
-      try {
-        const response = await fetch(`/fuerst_lex/${filename}`);
-        if (response.ok) {
-          const blob = await response.blob();
-          const file = new File([blob], filename, { type: 'image/jpeg' });
-          files.push(file);
-        } else {
-          console.warn(`Could not fetch ${filename}: ${response.status}`);
-        }
-      } catch (e) {
-        console.warn(`Error fetching ${filename}:`, e);
-      }
-    }
-    
-    if (files.length === 0) {
-      alert('Could not load any of the selected images. Make sure they exist in public/fuerst_lex/');
+    if (filesToScan.length === 0) {
+      alert('No files selected for scanning.');
       return;
     }
     
     // Close the modal and trigger scanning
     setShowMissingPages(false);
-    processFiles(files, missingPageInstructions);
-  }, [selectedMissingPages, processFiles, missingPageInstructions]);
+    processFiles(filesToScan, missingPageInstructions);
+  }, [selectedMissingFiles, missingPageFiles, processFiles, missingPageInstructions]);
 
 
   const handleOpenDeleteByPage = useCallback(() => {
@@ -2300,142 +2337,207 @@ const App: React.FC = () => {
       {/* Missing Pages Modal */}
       {showMissingPages && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-slate-200">
-              <h2 className="text-lg font-bold text-slate-800">Missing Pages Check</h2>
+          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-700">
+              <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Missing Pages Check</h2>
               <button 
                 onClick={() => setShowMissingPages(false)}
-                className="p-1 hover:bg-slate-100 rounded-lg transition-colors"
+                className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-slate-600 dark:text-slate-300">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
               </button>
             </div>
             
             <div className="p-4 space-y-4 overflow-y-auto flex-1">
-              {/* Summary stats */}
-              <div className="grid grid-cols-3 gap-4">
-                <div className="bg-slate-50 rounded-lg p-3 text-center">
-                  <div className="text-2xl font-bold text-slate-800">{scannedPagesCount}</div>
-                  <div className="text-xs text-slate-500">Pages Scanned</div>
-                </div>
-                <div className="bg-rose-50 rounded-lg p-3 text-center">
-                  <div className="text-2xl font-bold text-rose-600">{missingPages.length}</div>
-                  <div className="text-xs text-rose-500">Missing Pages</div>
-                </div>
-                <div className="bg-emerald-50 rounded-lg p-3 text-center">
-                  <div className="text-2xl font-bold text-emerald-600">
-                    {Math.round((scannedPagesCount / (1558 - 44 + 1)) * 100)}%
-                  </div>
-                  <div className="text-xs text-emerald-500">Complete</div>
-                </div>
-              </div>
-
-              {/* Range info */}
-              <div className="text-sm text-slate-600 bg-slate-50 rounded-lg p-3">
-                Checking range: <span className="font-mono font-medium">fuerst_lex_0044.jpg</span> to <span className="font-mono font-medium">fuerst_lex_1558.jpg</span>
-                <span className="text-slate-400 ml-2">({1558 - 44 + 1} total pages)</span>
-              </div>
-
-              {/* Additional instructions for AI */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Special instructions for AI (optional)</label>
-                <textarea
-                  value={missingPageInstructions}
-                  onChange={(e) => setMissingPageInstructions(e.target.value)}
-                  placeholder="e.g., Prefer spelling on the page; prefer Holam over Holam-Haser in ambiguous cases; do not change Strong's numbers."
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
-                  rows={3}
+              {/* Directory selection */}
+              <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-lg p-4">
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                  Select Source Directory
+                </label>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                  Choose a folder containing your lexicon page images (JPGs). The app will compare these against entries in the database.
+                </p>
+                <input
+                  type="file"
+                  ref={missingPagesInputRef}
+                  onChange={handleMissingPagesDirectorySelect}
+                  // @ts-ignore - webkitdirectory is non-standard but widely supported
+                  webkitdirectory=""
+                  directory=""
+                  className="hidden"
                 />
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => missingPagesInputRef.current?.click()}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                    </svg>
+                    {sourceDirectoryName ? 'Change Directory' : 'Select Directory'}
+                  </button>
+                  {sourceDirectoryName && (
+                    <button
+                      onClick={() => {
+                        setMissingPageFiles([]);
+                        setCoveredPageFiles([]);
+                        setAllSourceFiles([]);
+                        setSelectedMissingFiles(new Set());
+                        setSourceDirectoryName('');
+                      }}
+                      className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
+                      title="Clear selection and start over"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+                {sourceDirectoryName && (
+                  <div className="mt-2 text-xs text-slate-600 dark:text-slate-400">
+                    Selected: <span className="font-mono font-medium">{sourceDirectoryName}</span>
+                  </div>
+                )}
               </div>
 
-              {/* Missing pages list */}
-              {missingPages.length === 0 ? (
-                <div className="text-center py-8 text-emerald-600">
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 mx-auto mb-2">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <p className="font-medium">All pages are scanned!</p>
-                </div>
-              ) : (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="text-sm font-medium text-slate-700">
-                      Missing Page Numbers ({missingPages.length})
-                      {selectedMissingPages.size > 0 && (
-                        <span className="ml-2 text-indigo-600">
-                          — {selectedMissingPages.size} selected
-                        </span>
-                      )}
-                    </label>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={selectAllMissingPages}
-                        className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline"
-                      >
-                        Select All
-                      </button>
-                      <button
-                        onClick={clearMissingPageSelection}
-                        className="text-xs text-slate-500 hover:text-slate-700 hover:underline"
-                      >
-                        Clear
-                      </button>
+              {/* Summary stats - only show after directory is selected */}
+              {allSourceFiles.length > 0 && (
+                <>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-slate-50 dark:bg-slate-900/50 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-slate-800 dark:text-slate-100">{allSourceFiles.length}</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-400">Total Images</div>
+                    </div>
+                    <div className="bg-emerald-50 dark:bg-emerald-900/30 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{coveredPageFiles.length}</div>
+                      <div className="text-xs text-emerald-500 dark:text-emerald-400">Have Entries</div>
+                    </div>
+                    <div className="bg-rose-50 dark:bg-rose-900/30 rounded-lg p-3 text-center">
+                      <div className="text-2xl font-bold text-rose-600 dark:text-rose-400">{missingPageFiles.length}</div>
+                      <div className="text-xs text-rose-500 dark:text-rose-400">Missing</div>
                     </div>
                   </div>
-                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 max-h-60 overflow-y-auto">
-                    <div className="flex flex-wrap gap-1.5">
-                      {missingPages.map((pageNum) => (
-                        <button
-                          key={pageNum}
-                          onClick={() => toggleMissingPageSelection(pageNum)}
-                          className={`text-xs px-2 py-1 rounded font-mono transition-colors ${
-                            selectedMissingPages.has(pageNum)
-                              ? 'bg-indigo-500 text-white'
-                              : 'bg-rose-100 text-rose-700 hover:bg-rose-200'
-                          }`}
-                          title={`fuerst_lex_${String(pageNum).padStart(4, '0')}.jpg`}
-                        >
-                          {String(pageNum).padStart(4, '0')}
-                        </button>
-                      ))}
-                    </div>
+
+                  {/* Progress bar */}
+                  <div className="bg-slate-100 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                    <div 
+                      className="bg-emerald-500 h-full transition-all duration-300"
+                      style={{ width: `${allSourceFiles.length > 0 ? (coveredPageFiles.length / allSourceFiles.length) * 100 : 0}%` }}
+                    />
                   </div>
-                </div>
+                  <div className="text-xs text-center text-slate-500 dark:text-slate-400">
+                    {Math.round((coveredPageFiles.length / allSourceFiles.length) * 100)}% coverage
+                  </div>
+
+                  {/* Additional instructions for AI */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Special instructions for AI (optional)</label>
+                    <textarea
+                      value={missingPageInstructions}
+                      onChange={(e) => setMissingPageInstructions(e.target.value)}
+                      placeholder="e.g., Prefer spelling on the page; prefer Holam over Holam-Haser in ambiguous cases; do not change Strong's numbers."
+                      className="w-full border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+                      rows={2}
+                    />
+                  </div>
+
+                  {/* Missing pages list */}
+                  {missingPageFiles.length === 0 ? (
+                    <div className="text-center py-8 text-emerald-600 dark:text-emerald-400">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 mx-auto mb-2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <p className="font-medium">All pages have entries!</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                          Missing Pages ({missingPageFiles.length})
+                          {selectedMissingFiles.size > 0 && (
+                            <span className="ml-2 text-indigo-600 dark:text-indigo-400">
+                              — {selectedMissingFiles.size} selected
+                            </span>
+                          )}
+                        </label>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={selectAllMissingFiles}
+                            className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline"
+                          >
+                            Select All
+                          </button>
+                          <button
+                            onClick={clearMissingFileSelection}
+                            className="text-xs text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:underline"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 rounded-lg p-3 max-h-48 overflow-y-auto">
+                        <div className="flex flex-wrap gap-1.5">
+                          {missingPageFiles.map((file) => (
+                            <button
+                              key={file.name}
+                              onClick={() => toggleMissingFileSelection(file.name)}
+                              className={`text-xs px-2 py-1 rounded font-mono transition-colors ${
+                                selectedMissingFiles.has(file.name)
+                                  ? 'bg-indigo-500 text-white'
+                                  : 'bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300 hover:bg-rose-200 dark:hover:bg-rose-900'
+                              }`}
+                              title={file.name}
+                            >
+                              {(() => {
+                                // Extract just the page number from filenames like 'con_0707.jpg' or 'fuerst_lex_0042.jpg'
+                                const baseName = file.name.replace(/\.[^.]+$/, '');
+                                const numMatch = baseName.match(/(\d+)$/);
+                                return numMatch ? numMatch[1] : baseName.slice(-8);
+                              })()}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
 
-            <div className="flex justify-between p-4 border-t border-slate-200">
+            <div className="flex justify-between p-4 border-t border-slate-200 dark:border-slate-700">
               <button
                 onClick={() => {
-                  const filenames = missingPages.map(n => `fuerst_lex_${String(n).padStart(4, '0')}.jpg`).join('\n');
+                  const filenames = missingPageFiles.map(f => f.name).join('\n');
                   navigator.clipboard.writeText(filenames);
                   alert('Copied missing filenames to clipboard!');
                 }}
-                className="flex items-center gap-2 text-xs font-medium text-slate-600 hover:text-slate-800 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors"
+                disabled={missingPageFiles.length === 0}
+                className="flex items-center gap-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0013.5 2.25h-3c-1.03 0-1.9.693-2.166 1.638m7.332 0c.055.194.084.4.084.612v0a.75.75 0 01-.75.75H9a.75.75 0 01-.75-.75v0c0-.212.03-.418.084-.612m7.332 0c.646.049 1.288.11 1.927.184 1.1.128 1.907 1.077 1.907 2.185V19.5a2.25 2.25 0 01-2.25 2.25H6.75A2.25 2.25 0 014.5 19.5V6.257c0-1.108.806-2.057 1.907-2.185a48.208 48.208 0 011.927-.184" />
                 </svg>
-                Copy All Filenames
+                Copy Missing
               </button>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowMissingPages(false)}
-                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                  className="px-4 py-2 text-sm font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg transition-colors"
                 >
                   Close
                 </button>
                 <button
                   onClick={handleScanSelectedMissingPages}
-                  disabled={selectedMissingPages.size === 0 || isProcessing}
+                  disabled={selectedMissingFiles.size === 0 || isProcessing}
                   className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
                   </svg>
-                  Scan Selected ({selectedMissingPages.size})
+                  Scan Selected ({selectedMissingFiles.size})
                 </button>
               </div>
             </div>

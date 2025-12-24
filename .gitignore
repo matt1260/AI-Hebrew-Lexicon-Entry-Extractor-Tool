@@ -13,6 +13,9 @@ dist-ssr
 *.local
 .env
 public/gesenius_lex/
+*.sh
+*.jsonl
+.github/
 
 # Editor directories and files
 .vscode/*

@@ -47,6 +47,7 @@ VITE_LEXICON_SERVER=http://localhost:4000
 
 3. Create a database (button generates a new database, see lexicon.sqlite)
 4. Select Gemini model to use (Gemini 3 Flash or better HIGHLY recommended)
+5. Put book images in a directory under public/ and ensure each page is using the format bookname_####.jpg 
 5. Load scanned images to start AI reading or to export for BATCH processing.
 6. Use the script `run-batch-job.js` in `scripts/` to process exported BATCH JSONL files. See [scripts/README.md](scripts/README.md) for detailed instructions.
 

@@ -158,6 +158,7 @@ async function uploadReferencedFiles(jsonlPath, ai) {
 
     // Deep traverse to find parts with [[FILE:...]]
     // We assume standard structure: body.contents[].parts[].text
+    let extractedFilename = null;
     if (lineObj.body && lineObj.body.contents) {
       for (const content of lineObj.body.contents) {
         if (content.parts) {
@@ -166,10 +167,50 @@ async function uploadReferencedFiles(jsonlPath, ai) {
             if (part.text && typeof part.text === 'string' && part.text.startsWith('[[FILE:') && part.text.endsWith(']]')) {
               // Extract path
               const relativePath = part.text.substring(7, part.text.length - 2);
-              const absolutePath = path.resolve(process.cwd(), relativePath);
+              
+              // Extract filename for key generation (first file reference only)
+              if (!extractedFilename) {
+                const filename = path.basename(relativePath, path.extname(relativePath));
+                extractedFilename = filename;
+              }
+              let absolutePath = path.resolve(process.cwd(), relativePath);
 
               if (!fs.existsSync(absolutePath)) {
-                throw new Error(`Referenced file not found: ${absolutePath}`);
+                // Try with public/ prefix
+                const publicPath = path.join('public', relativePath);
+                const absolutePublicPath = path.resolve(process.cwd(), publicPath);
+                
+                if (fs.existsSync(absolutePublicPath)) {
+                  absolutePath = absolutePublicPath;
+                } else {
+                  // Search in subdirectories of public/
+                  const publicDir = path.resolve(process.cwd(), 'public');
+                  if (fs.existsSync(publicDir)) {
+                    const subdirs = fs.readdirSync(publicDir).filter(f => {
+                      try {
+                        return fs.statSync(path.join(publicDir, f)).isDirectory();
+                      } catch (e) {
+                        return false;
+                      }
+                    });
+                    
+                    let found = false;
+                    for (const subdir of subdirs) {
+                      const candidatePath = path.join(publicDir, subdir, relativePath);
+                      if (fs.existsSync(candidatePath)) {
+                        absolutePath = candidatePath;
+                        found = true;
+                        break;
+                      }
+                    }
+                    
+                    if (!found) {
+                      throw new Error(`Referenced file not found: ${relativePath}. Tried root, public/, and subdirectories of public/.`);
+                    }
+                  } else {
+                    throw new Error(`Referenced file not found: ${absolutePath} and public/ directory does not exist.`);
+                  }
+                }
               }
 
               let fileUri;
@@ -214,6 +255,12 @@ async function uploadReferencedFiles(jsonlPath, ai) {
         }
       }
     }
+    
+    // Store extracted filename for later key generation
+    if (extractedFilename) {
+      lineObj._sourceFile = extractedFilename;
+    }
+    
     modifiedLines.push(JSON.stringify(lineObj));
   }
 
@@ -455,8 +502,26 @@ function convertLegacyBatchRequest(request, fallbackModel, lineNumber) {
   }
 
   // Gemini batch expects an inlined request: contents is an array of messages, each with parts.
+  // Generate a readable key from the source file if available
+  let key;
+  if (request._sourceFile) {
+    // Use the extracted filename (e.g., 'fuerst_lex_0042' -> 'fuerst_0042')
+    const filename = request._sourceFile;
+    // Try to extract a shorter version: prefix_number
+    const match = filename.match(/^([a-z]+)(?:_lex(?:icon)?)?_?(\d+)$/i);
+    if (match) {
+      key = `${match[1].toLowerCase()}_${match[2]}`;
+    } else {
+      // Fallback to using the full filename
+      key = filename.toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+    }
+  } else {
+    // Fallback to custom_id or line number
+    key = request.custom_id ?? `line-${lineNumber}`;
+  }
+  
   const normalized = {
-    key: request.custom_id ?? `line-${lineNumber}`,
+    key,
     request: {
       model,
       contents: [
